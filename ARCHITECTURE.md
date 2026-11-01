@@ -10,7 +10,13 @@ An authorised approval of an eligible, recent decision invokes `simulate_operati
 
 ## Intended production integrations
 
-The following describes a target architecture. These integrations are not implemented in this repository.
+<!-- coderabbit-ai-generated:v1 -->
+
+<!-- coderabbit-ai-generated-section:v1:204b20a137bad87ba8fdf74c6dc415fef8fcd9c4946d4c70dbef5bdfd9ade8eb -->
+
+The following describes a target architecture. The local `observe.py` CLI can list GPU-requesting Kubernetes pods and read selected DCGM metrics; it does not submit decisions or verify checkpoints. Run:ai integration, authoritative checkpoint checks, scheduler actions, and post-action verification remain unimplemented.
+
+<!-- /coderabbit-ai-generated:v1 -->
 
 ```mermaid
 flowchart LR

@@ -212,3 +212,21 @@ def test_ambiguous_observation_order_fails_closed(api):
         b.created_at = a.created_at
     assert approve(client, first['decision_id']).status_code == 409
     assert approve(client, second['decision_id']).status_code == 409
+
+
+def test_documented_sample_walkthrough(api, monkeypatch):
+    import json
+    from pathlib import Path
+    client, _, _ = api
+    principals = [{"token": TOKEN, "subject": "demo@example.com", "roles": ["evaluate", "read", "approve"],
+                   "scopes": [{"team_name": "Demo Team", "workload_id": "demo-notebook"}]}]
+    monkeypatch.setenv("GPU_FINOPS_PRINCIPALS", json.dumps(principals))
+    sample = json.loads((Path(__file__).parent / "examples/workload-event.json").read_text())
+    response = client.post('/evaluate', headers=HEADERS, json=sample)
+    assert response.status_code == 200
+    decision_id = response.json()['decision_id']
+    simulated = approve(client, decision_id)
+    assert simulated.status_code == 200 and simulated.json()['status'] == 'SIMULATED'
+    assert simulated.json()['verification'] is None
+    detail = client.get(f'/decisions/{decision_id}', headers=HEADERS).json()
+    assert [item['event'] for item in detail['audit_trail']] == ['DECISION_CREATED', 'ACTION_SIMULATED']

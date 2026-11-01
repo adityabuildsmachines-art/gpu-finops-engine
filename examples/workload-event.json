@@ -1,0 +1,16 @@
+{
+  "gpu_id": "GPU-demo-01",
+  "workload_id": "demo-notebook",
+  "owner_email": "owner@example.com",
+  "team_name": "Demo Team",
+  "environment": "dev",
+  "workload_type": "notebook",
+  "pod_status": "Running",
+  "checkpoint_state": "NONE",
+  "sm_utilisation": 4,
+  "memory_used_mb": 18432,
+  "hourly_rate": 4.2,
+  "last_activity_at": "2020-01-01T00:00:00Z",
+  "savings_horizon_hours": 2,
+  "estimated_disruption_cost": 1
+}
