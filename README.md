@@ -4,7 +4,15 @@
 
 <!-- coderabbit-ai-generated-section:v1:31c0892a79bb2a5c0011faf3c5d168e926b97db6098f0ea616a8c7320f1bbf78 -->
 
-This service evaluates GPU workload reports and records **simulated** approval decisions. It does not reclaim GPUs or verify GPU memory release. A real executor requires an authoritative live workload provider and a final safety check.
+<!-- coderabbit-ai-generated:v1 -->
+
+<!-- coderabbit-ai-generated-section:v1:fa4dafbbaa4e98d2775f7d221768e31344fdb323e1248f4c5460648188865b7c -->
+
+This MVP control plane evaluates workload events submitted through the API. The caller supplies workload and checkpoint state; the service does not discover workloads from a cluster or independently confirm checkpoint state.
+
+Approvals produce a simulation ID and `SIMULATED` status. They do not reclaim GPUs or verify memory release. The [architecture](ARCHITECTURE.md) describes the MVP and the intended production integrations for Kubernetes, Run:ai, DCGM, checkpoint authority, safe scheduler actions, and post-action verification.
+
+<!-- /coderabbit-ai-generated:v1 -->
 
 ## Setup
 
