@@ -1,115 +1,214 @@
-﻿from datetime import datetime, timedelta, timezone
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timedelta, timezone
+import json
+import threading
 
+import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import create_engine, text
+from sqlalchemy.orm import sessionmaker
 
-from main import app
+from main import app, get_db
+from models import Base, Decision
 
-client = TestClient(app)
+TOKEN = "test-token-" + "x" * 32
+READ_TOKEN = "read-token-" + "x" * 32
+OTHER_TOKEN = "other-token-" + "x" * 32
+HEADERS = {"Authorization": f"Bearer {TOKEN}"}
 
 
-def make_event(**overrides):
-    event = {
-        "gpu_id": "GPU-07",
-        "workload_id": "nb-2291",
-        "owner_email": "priya@example.com",
-        "team_name": "Research A",
-        "environment": "dev",
-        "workload_type": "notebook",
-        "pod_status": "Running",
-        "checkpoint_state": "NONE",
-        "sm_utilisation": 0.8,
-        "memory_used_mb": 18432,
-        "hourly_rate": 4.20,
-        "last_activity_at": (
-            datetime.now(timezone.utc) - timedelta(hours=10)
-        ).isoformat(),
+@pytest.fixture
+def api(tmp_path, monkeypatch):
+    principals = [
+        {"token": TOKEN, "subject": "operator@example.com", "roles": ["evaluate", "read", "approve"], "scopes": [{"team_name": "Research A", "workload_id": "nb-2291"}]},
+        {"token": READ_TOKEN, "subject": "reader@example.com", "roles": ["read"], "scopes": [{"team_name": "Research A", "workload_id": "nb-2291"}]},
+        {"token": OTHER_TOKEN, "subject": "other@example.com", "roles": ["read", "approve"], "scopes": [{"team_name": "Other", "workload_id": "other"}]},
+    ]
+    monkeypatch.setenv("GPU_FINOPS_PRINCIPALS", json.dumps(principals))
+    engine = create_engine(f"sqlite:///{tmp_path / 'test.db'}", connect_args={"check_same_thread": False})
+    Base.metadata.create_all(engine)
+    sessions = sessionmaker(bind=engine, autoflush=False)
+
+    def test_db():
+        db = sessions()
+        try:
+            yield db
+        except Exception:
+            db.rollback()
+            raise
+        finally:
+            db.close()
+
+    app.dependency_overrides[get_db] = test_db
+    with TestClient(app, raise_server_exceptions=False) as client:
+        yield client, sessions, engine
+    app.dependency_overrides.clear()
+    engine.dispose()
+
+
+def event(**overrides):
+    result = {
+        "gpu_id": "GPU-07", "workload_id": "nb-2291", "owner_email": "priya@example.com",
+        "team_name": "Research A", "environment": "dev", "workload_type": "notebook",
+        "pod_status": "Running", "checkpoint_state": "NONE", "sm_utilisation": 0.8,
+        "memory_used_mb": 18432, "hourly_rate": 4.2,
+        "last_activity_at": (datetime.now(timezone.utc) - timedelta(hours=10)).isoformat(),
+        "savings_horizon_hours": 2, "estimated_disruption_cost": 1,
     }
-
-    event.update(overrides)
-    return event
+    return {**result, **overrides}
 
 
-def test_health():
-    response = client.get("/health")
+def evaluate(client, **changes):
+    response = client.post('/evaluate', json=event(**changes), headers=HEADERS)
+    assert response.status_code == 200, response.text
+    return response.json()
 
+
+def approve(client, decision_id, approved=True, headers=HEADERS):
+    return client.post(f'/decisions/{decision_id}/approve', json={"approved": approved}, headers=headers)
+
+
+def test_authentication_and_scoped_authorization(api, monkeypatch):
+    client, _, _ = api
+    assert client.post('/evaluate', json=event()).status_code == 401
+    assert client.post('/evaluate', json=event(), headers={"Authorization": f"Bearer {READ_TOKEN}"}).status_code == 403
+    data = evaluate(client)
+    other = {"Authorization": f"Bearer {OTHER_TOKEN}"}
+    assert client.get(f"/decisions/{data['decision_id']}", headers=other).status_code == 404
+    assert approve(client, data['decision_id'], headers=other).status_code == 404
+    assert approve(client, data['decision_id'], headers={"Authorization": f"Bearer {READ_TOKEN}"}).status_code == 404
+    assert client.post(f"/decisions/{data['decision_id']}/approve", headers=HEADERS, json={"approved": True, "approver_email": "forged@example.com"}).status_code == 422
+    monkeypatch.delenv('GPU_FINOPS_PRINCIPALS')
+    assert client.post('/evaluate', json=event(), headers=HEADERS).status_code == 503
+
+
+@pytest.mark.parametrize('pod', ['Running', 'Pending', 'Failed', 'Completed'])
+@pytest.mark.parametrize('checkpoint', ['IN_PROGRESS', 'FAILED'])
+def test_checkpoint_never_actionable(api, pod, checkpoint):
+    client, _, _ = api
+    data = evaluate(client, pod_status=pod, checkpoint_state=checkpoint)
+    assert data['decision'] == 'DO_NOT_TOUCH'
+    assert data['workload_state'] == 'CHECKPOINTING'
+    assert approve(client, data['decision_id']).status_code == 409
+
+
+def test_active_workload_and_unknown_disruption_are_not_actionable(api):
+    client, _, _ = api
+    active = evaluate(client, sm_utilisation=90)
+    assert active['decision'] == 'NO_ACTION'
+    assert approve(client, active['decision_id']).status_code == 409
+    unknown = evaluate(client, estimated_disruption_cost=None)
+    assert unknown['decision'] == 'NO_ACTION'
+    assert unknown['disruption_cost'] is None and unknown['net_benefit'] is None
+    assert 'DISRUPTION_COST_UNKNOWN' in unknown['reason_codes']
+    assert approve(client, unknown['decision_id']).status_code == 409
+
+
+def test_prospective_cost_and_production_requires_approval(api):
+    client, _, _ = api
+    data = evaluate(client, environment='prod', savings_horizon_hours=2, estimated_disruption_cost=1)
+    assert data['avoidable_cost'] == 8.4 and data['net_benefit'] == 7.4
+    assert data['decision'] == 'REQUIRE_APPROVAL'
+    no_benefit = evaluate(client, estimated_disruption_cost=100)
+    assert no_benefit['decision'] == 'NO_ACTION'
+
+
+def test_approval_and_rejection_audit_persist_and_identity_is_authenticated(api):
+    client, _, _ = api
+    data = evaluate(client)
+    response = approve(client, data['decision_id'])
     assert response.status_code == 200
-    assert response.json()["status"] == "ok"
+    assert response.json()['status'] == 'SIMULATED'
+    assert response.json()['verification'] is None
+    detail = client.get(f"/decisions/{data['decision_id']}", headers=HEADERS).json()
+    assert [entry['event'] for entry in detail['audit_trail']] == ['DECISION_CREATED', 'ACTION_SIMULATED']
+    assert detail['audit_trail'][-1]['actor'] == 'operator@example.com'
+    assert detail['audit_trail'][0]['savings_horizon_hours'] == 2
+    assert detail['audit_trail'][0]['estimated_disruption_cost'] == 1
+    assert approve(client, data['decision_id']).status_code == 409
+    rejected = evaluate(client)
+    assert approve(client, rejected['decision_id'], approved=False).json()['status'] == 'REJECTED'
+    detail = client.get(f"/decisions/{rejected['decision_id']}", headers=HEADERS).json()
+    assert detail['audit_trail'][-1]['event'] == 'ACTION_REJECTED'
+    assert approve(client, rejected['decision_id']).status_code == 409
 
 
-def test_vram_hoarding_requires_approval():
-    response = client.post("/evaluate", json=make_event())
-
-    assert response.status_code == 200
-
-    data = response.json()
-
-    assert data["workload_state"] == "VRAM_HOARDING"
-    assert data["decision"] == "REQUIRE_APPROVAL"
-    assert "VRAM_RETAINED" in data["reason_codes"]
-    assert data["net_benefit"] > 0
-
-
-def test_checkpointing_is_protected():
-    response = client.post(
-        "/evaluate",
-        json=make_event(
-            workload_type="training",
-            checkpoint_state="IN_PROGRESS",
-            sm_utilisation=2.0,
-            memory_used_mb=32000,
-            hourly_rate=8.0,
-        ),
-    )
-
-    assert response.status_code == 200
-
-    data = response.json()
-
-    assert data["workload_state"] == "CHECKPOINTING"
-    assert data["decision"] == "DO_NOT_TOUCH"
-    assert "CHECKPOINT_WRITE_ACTIVE" in data["reason_codes"]
+def test_newer_or_expired_observation_blocks_simulation(api):
+    client, sessions, _ = api
+    old = evaluate(client)
+    evaluate(client, checkpoint_state='IN_PROGRESS')
+    assert approve(client, old['decision_id']).status_code == 409
+    expired = evaluate(client)
+    with sessions.begin() as db:
+        db.get(Decision, expired['decision_id']).created_at = datetime.utcnow() - timedelta(minutes=6)
+    assert approve(client, expired['decision_id']).status_code == 409
+    assert approve(client, expired['decision_id'], approved=False).status_code == 200
 
 
-def test_approval_executes_and_verifies():
-    created = client.post("/evaluate", json=make_event()).json()
-
-    response = client.post(
-        f"/decisions/{created['decision_id']}/approve",
-        json={
-            "approver_email": "platform@example.com",
-            "approved": True,
-        },
-    )
-
-    assert response.status_code == 200
-
-    data = response.json()
-
-    assert data["status"] == "EXECUTED_AND_VERIFIED"
-    assert data["operation_id"].startswith("op_")
-    assert data["verification"] == "GPU_MEMORY_RELEASED"
+def test_parallel_approvals_have_one_winner(api):
+    client, _, _ = api
+    data = evaluate(client)
+    barrier = threading.Barrier(2)
+    def submit():
+        barrier.wait()
+        return approve(client, data['decision_id']).status_code
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(lambda _: submit(), range(2)))
+    assert sorted(results) == [200, 409]
+    detail = client.get(f"/decisions/{data['decision_id']}", headers=HEADERS).json()
+    assert [entry['event'] for entry in detail['audit_trail']].count('ACTION_SIMULATED') == 1
 
 
-def test_decision_audit_trail():
-    created = client.post("/evaluate", json=make_event()).json()
+def test_failed_database_update_preserves_status_and_audit(api):
+    client, _, engine = api
+    data = evaluate(client)
+    with engine.begin() as connection:
+        connection.execute(text("CREATE TRIGGER refuse_approval BEFORE UPDATE ON decisions BEGIN SELECT RAISE(ABORT, 'blocked'); END"))
+    assert approve(client, data['decision_id']).status_code == 500
+    detail = client.get(f"/decisions/{data['decision_id']}", headers=HEADERS).json()
+    assert detail['status'] == 'AWAITING_APPROVAL'
+    assert [entry['event'] for entry in detail['audit_trail']] == ['DECISION_CREATED']
 
-    client.post(
-        f"/decisions/{created['decision_id']}/approve",
-        json={
-            "approver_email": "platform@example.com",
-            "approved": True,
-        },
-    )
 
-    response = client.get(f"/decisions/{created['decision_id']}")
+@pytest.mark.parametrize('changes', [
+    {'hourly_rate': 1e308}, {'hourly_rate': 'Infinity'}, {'sm_utilisation': -1},
+    {'memory_used_mb': -1}, {'last_activity_at': '2026-01-01T12:00:00'},
+    {'last_activity_at': '2999-01-01T00:00:00Z'}, {'team_name': '  '},
+])
+def test_invalid_inputs_are_rejected(api, changes):
+    client, _, _ = api
+    assert client.post('/evaluate', json=event(**changes), headers=HEADERS).status_code == 422
 
-    assert response.status_code == 200
 
-    data = response.json()
+def test_timezone_offset_is_normalized_before_storage(api):
+    client, sessions, _ = api
+    data = evaluate(client, last_activity_at='2020-01-01T12:00:00+05:30')
+    with sessions() as db:
+        assert db.get(Decision, data['decision_id']).last_activity_at == datetime(2020, 1, 1, 6, 30)
 
-    assert data["status"] == "EXECUTED_AND_VERIFIED"
 
-    events = [item["event"] for item in data["audit_trail"]]
+def test_nonfinite_json_is_a_validation_error(api):
+    client, _, _ = api
+    body = json.dumps(event()).replace('"hourly_rate": 4.2', '"hourly_rate": NaN')
+    response = client.post('/evaluate', content=body, headers={**HEADERS, "Content-Type": "application/json"})
+    assert response.status_code == 422
 
-    assert "DECISION_CREATED" in events
-    assert "ACTION_APPROVED_AND_VERIFIED" in events
+
+def test_legacy_decision_cannot_be_approved(api):
+    client, sessions, _ = api
+    data = evaluate(client)
+    with sessions.begin() as db:
+        db.get(Decision, data['decision_id']).policy_version = 'gpu-finops-mvp-v1'
+    assert approve(client, data['decision_id']).status_code == 409
+
+
+def test_ambiguous_observation_order_fails_closed(api):
+    client, sessions, _ = api
+    first = evaluate(client)
+    second = evaluate(client)
+    with sessions.begin() as db:
+        a = db.get(Decision, first['decision_id'])
+        b = db.get(Decision, second['decision_id'])
+        b.created_at = a.created_at
+    assert approve(client, first['decision_id']).status_code == 409
+    assert approve(client, second['decision_id']).status_code == 409
