@@ -69,7 +69,23 @@ kill "$demo_pid"
 
 The approval returns `SIMULATED`; the audit includes `DECISION_CREATED` and `ACTION_SIMULATED`. The sample timestamp is deliberately historical. Delete the disposable database when finished.
 
+<!-- coderabbit-ai-generated:v1 -->
+
+<!-- coderabbit-ai-generated-section:v1:154ea8de13eccc27d22123fe34d323efdb90a196d1067135d3f460507666606c -->
+
+## Streamlit interface
+
+Start the API with the authentication configuration above, then run:
+
+```bash
+streamlit run streamlit_app.py
+```
+
+Open the address printed by Streamlit. Enter your scoped API bearer token in the sidebar, submit workload details, and review the recommendation and audit trail. To approve or reject, your token needs the `approve` role; the interface also needs `read` permission to load decision status and audit entries. Results and tokens are held per browser session. The server sends the token only to the API URL configured by `GPU_FINOPS_API_URL` (default `http://127.0.0.1:8000`). Use HTTPS for remote APIs and protect the interface with an appropriate access control layer and HTTPS in shared deployments. API approval remains simulated.
+
 ## Read-only observations
+
+<!-- /coderabbit-ai-generated:v1 -->
 
 `observe.py` is a local CLI and does not submit events, update the database, or perform scheduler actions. It outputs JSON with a collection timestamp:
 
