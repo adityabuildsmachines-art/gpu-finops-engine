@@ -73,19 +73,25 @@ The approval returns `SIMULATED`; the audit includes `DECISION_CREATED` and `ACT
 
 <!-- coderabbit-ai-generated-section:v1:154ea8de13eccc27d22123fe34d323efdb90a196d1067135d3f460507666606c -->
 
-## Streamlit interface
+<!-- coderabbit-ai-generated:v1 -->
 
-Start the API with the authentication configuration above, then run:
+<!-- coderabbit-ai-generated-section:v1:f0772c6ee39d05808c8f2089f384f68c1ab6ec00c6b424bf9dbad3aeca5989d1 -->
 
-```bash
-streamlit run streamlit_app.py
-```
+## API access
 
-Open the address printed by Streamlit. Enter your scoped API bearer token in the sidebar, submit workload details, and review the recommendation and audit trail. To approve or reject, your token needs the `approve` role; the interface also needs `read` permission to load decision status and audit entries. Results and tokens are held per browser session. The server sends the token only to the API URL configured by `GPU_FINOPS_API_URL` (default `http://127.0.0.1:8000`). <!-- coderabbit-ai-generated:v1 -->
+Use scoped API tokens for each operation.
+
+<!-- /coderabbit-ai-generated:v1 --> <!-- coderabbit-ai-generated:v1 -->
 
 <!-- coderabbit-ai-generated-section:v1:8afe54ca5be9ea211af341dca34667e5107d0fdee3b72bdaf5b2c7a621b88b6e -->
 
-The interface requires HTTPS for remote APIs; HTTP is accepted for loopback addresses. Protect the interface with an appropriate access control layer and HTTPS in shared deployments.
+<!-- coderabbit-ai-generated:v1 -->
+
+<!-- coderabbit-ai-generated-section:v1:328588b5b059f6713c41a15643ce2b4670a9d4f76908c3dfc046f216cd0aa500 -->
+
+Protect API credentials and use HTTPS for remote access.
+
+<!-- /coderabbit-ai-generated:v1 -->
 
 <!-- /coderabbit-ai-generated:v1 --> API approval remains simulated.
 
