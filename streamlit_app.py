@@ -1,6 +1,7 @@
 """Streamlit interface for the simulation API."""
 from datetime import datetime, time, timezone
 import os
+import ipaddress
 
 import httpx
 import streamlit as st
@@ -8,7 +9,26 @@ import streamlit as st
 API_URL = os.environ.get('GPU_FINOPS_API_URL', 'http://127.0.0.1:8000').rstrip('/')
 
 
+def api_url_is_safe(value):
+    try:
+        url = httpx.URL(value)
+        if not url.host or url.username or url.password or url.query or url.fragment:
+            return False
+        if url.scheme == 'https':
+            return True
+        if url.scheme != 'http':
+            return False
+        if url.host.lower() == 'localhost':
+            return True
+        return ipaddress.ip_address(url.host).is_loopback
+    except (ValueError, httpx.InvalidURL):
+        return False
+
+
 def api_request(method, path, token, payload=None):
+    if not api_url_is_safe(API_URL):
+        st.error('API URL must use HTTPS, except for local loopback addresses.')
+        return None
     try:
         with httpx.Client(base_url=API_URL, timeout=10, trust_env=False, follow_redirects=False) as client:
             response = client.request(method, path, headers={'Authorization': f'Bearer {token}'}, json=payload)
